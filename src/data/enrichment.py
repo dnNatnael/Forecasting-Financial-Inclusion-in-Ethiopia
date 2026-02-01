@@ -1,13 +1,28 @@
 """
 Enrich the unified financial inclusion dataset (Task 1).
 
+Record_type logic (unified schema):
+- observation: Actual measured value; must have pillar, indicator, indicator_code,
+  value_numeric, observation_date. category is empty. Used for surveys, operator data.
+- event: Policy/launch/milestone; must have category (e.g. policy, product_launch,
+  regulation). pillar is left EMPTY — events are not assigned to a pillar; their
+  effect on pillars is modeled via impact_link.
+- impact_link: Links an event to an indicator. Must have parent_id (event's record_id),
+  pillar (the pillar of the indicator affected), related_indicator (indicator_code),
+  impact_direction, impact_magnitude, lag_months, evidence_basis. parent_id links are
+  formed by setting parent_id = event.record_id (e.g. IMP_ENR_001.parent_id = "EVT_ENR_001").
+
+Pillar handling:
+- Observations: pillar is set (ACCESS, USAGE, AFFORDABILITY, GENDER, etc.).
+- Events: pillar is None/empty.
+- Impact_links: pillar is the pillar of the *indicator* that the event affects
+  (e.g. related_indicator=USG_DIGITAL_PAY -> pillar=USAGE).
+
 Adds:
 - Historical Findex baseline (2011 Account Ownership 14%) for continuity.
-- Digital Payment Adoption Rate (Usage pillar) — Findex-defined; 2024 ~35%.
-- Placeholder/alternative observations from the Additional Data Points Guide:
-  - Direct: agent density, ATM density, bank branches (structure for IMF FAS / NBE).
-  - Indirect: smartphone penetration, mobile internet (structure for GSMA/ITU).
-All new rows use the same unified schema and record_type='observation'.
+- Digital Payment Adoption Rate (Usage pillar); placeholders and usage observations.
+- One new event (NBE Interoperability Directive); two new impact_links.
+Verification: use verify_enrichment_impact() to audit temporal coverage and indicator expansion.
 """
 
 from pathlib import Path
@@ -26,7 +41,8 @@ UNIFIED_COLS = [
     "impact_estimate", "lag_months", "evidence_basis", "comparable_country",
     "collected_by", "collection_date", "original_text", "notes",
 ]
-# parent_id only in impact_link; we add it when merging
+# parent_id exists only on impact_link rows; it holds the event's record_id (event.record_id).
+# Main dataframe may have parent_id as NaN for non-impact_link rows after load_unified_data().
 OPTIONAL_COLS = ["parent_id"]
 
 
@@ -53,10 +69,10 @@ def _row(
     collection_date: str = COLLECTION_DATE,
     notes: str = "",
 ) -> dict:
-    """Build one observation row with unified schema and documentation fields."""
+    """Build one observation row: record_type='observation', pillar set (required for observations)."""
     return {
         "record_id": record_id,
-        "record_type": "observation",
+        "record_type": "observation",  # measured value; pillar must be set
         "category": None,
         "pillar": pillar,
         "indicator": indicator,
@@ -245,11 +261,11 @@ def _enrichment_observations() -> pd.DataFrame:
 
 
 def _enrichment_events() -> pd.DataFrame:
-    """New events (category filled; pillar left empty per schema)."""
+    """New events: record_type='event', category filled, pillar left EMPTY (events are not assigned to a pillar)."""
     base = {
         "record_type": "event",
-        "category": None,
-        "pillar": None,
+        "category": None,  # set per row below
+        "pillar": None,   # schema: events have no pillar; effect on pillars is via impact_link
         "indicator_direction": None,
         "value_numeric": None,
         "value_text": None,
@@ -271,12 +287,12 @@ def _enrichment_events() -> pd.DataFrame:
         "comparable_country": None,
         "collected_by": COLLECTED_BY,
         "collection_date": COLLECTION_DATE,
-        "parent_id": None,
+        "parent_id": None,  # events do not have parent_id; only impact_link rows do
     }
     rows = [
         {
             **base,
-            "record_id": "EVT_ENR_001",
+            "record_id": "EVT_ENR_001",  # referenced by IMP_ENR_001.parent_id
             "indicator": "NBE Interoperability Directive",
             "indicator_code": "EVT_INTEROP_DIR",
             "observation_date": pd.to_datetime("2024-06-01"),
@@ -294,9 +310,9 @@ def _enrichment_events() -> pd.DataFrame:
 
 
 def _enrichment_impact_links() -> pd.DataFrame:
-    """New impact_links (parent_id -> event, pillar, related_indicator, impact_*, lag_months, evidence_basis)."""
+    """New impact_links: parent_id = event.record_id (links to event); pillar = pillar of the indicator affected."""
     base = {
-        "record_type": "impact_link",
+        "record_type": "impact_link",  # relationship row; must have parent_id pointing to event
         "category": None,
         "indicator_direction": None,
         "value_numeric": None,
@@ -323,8 +339,8 @@ def _enrichment_impact_links() -> pd.DataFrame:
         {
             **base,
             "record_id": "IMP_ENR_001",
-            "parent_id": "EVT_ENR_001",
-            "pillar": "USAGE",
+            "parent_id": "EVT_ENR_001",  # link to new event (NBE Interop); event.record_id
+            "pillar": "USAGE",            # pillar of related_indicator (USG_DIGITAL_PAY is Usage)
             "indicator": "NBE Interop effect on Digital Payment Adoption",
             "indicator_code": None,
             "related_indicator": "USG_DIGITAL_PAY",
@@ -340,8 +356,8 @@ def _enrichment_impact_links() -> pd.DataFrame:
         {
             **base,
             "record_id": "IMP_ENR_002",
-            "parent_id": "EVT_0004",
-            "pillar": "USAGE",
+            "parent_id": "EVT_0004",     # link to existing event (Fayda Digital ID Program Rollout)
+            "pillar": "USAGE",            # related_indicator USG_DIGITAL_PAY is Usage pillar
             "indicator": "Fayda effect on Digital Payment Adoption",
             "indicator_code": None,
             "related_indicator": "USG_DIGITAL_PAY",
@@ -358,12 +374,77 @@ def _enrichment_impact_links() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def verify_enrichment_impact(
+    df_before: pd.DataFrame,
+    df_after: pd.DataFrame,
+) -> dict:
+    """
+    Verify enrichment impact: temporal coverage and indicator expansion (auditable).
+
+    - Compares record_type counts before vs after.
+    - For observations: years present per indicator_code (temporal coverage);
+      indicator_codes that appear only after enrichment (indicator expansion).
+    - Verifies parent_id links: every impact_link.parent_id must equal some event.record_id.
+
+    Returns
+    -------
+    dict with keys: record_type_counts_before, record_type_counts_after,
+    temporal_coverage_before, temporal_coverage_after, indicators_added,
+    parent_id_links_valid, event_ids, impact_parent_ids.
+    """
+    obs_before = df_before[df_before["record_type"] == "observation"]
+    obs_after = df_after[df_after["record_type"] == "observation"]
+    events_after = df_after[df_after["record_type"] == "event"]
+    impact_after = df_after[df_after["record_type"] == "impact_link"]
+
+    def _coverage(obs: pd.DataFrame) -> dict:
+        if obs.empty or "indicator_code" not in obs.columns:
+            return {}
+        obs = obs.dropna(subset=["observation_date", "indicator_code"])
+        obs["year"] = pd.to_datetime(obs["observation_date"]).dt.year
+        return obs.groupby("indicator_code")["year"].apply(lambda x: sorted(x.unique().tolist())).to_dict()
+
+    cov_before = _coverage(obs_before)
+    cov_after = _coverage(obs_after)
+    codes_before = set(cov_before.keys())
+    codes_after = set(cov_after.keys())
+    indicators_added = list(codes_after - codes_before)
+    # For existing codes, list years added (temporal expansion)
+    years_expanded = {}
+    for code in codes_before & codes_after:
+        y_b, y_a = set(cov_before.get(code, [])), set(cov_after.get(code, []))
+        new_years = y_a - y_b
+        if new_years:
+            years_expanded[code] = sorted(new_years)
+
+    event_ids = set(events_after["record_id"].dropna().astype(str))
+    impact_parent_ids = set(impact_after["parent_id"].dropna().astype(str))
+    parent_id_links_valid = impact_parent_ids <= event_ids if impact_parent_ids else True
+
+    return {
+        "record_type_counts_before": df_before["record_type"].value_counts().to_dict(),
+        "record_type_counts_after": df_after["record_type"].value_counts().to_dict(),
+        "temporal_coverage_before": cov_before,
+        "temporal_coverage_after": cov_after,
+        "indicators_added": indicators_added,
+        "years_expanded_for_existing_indicators": years_expanded,
+        "parent_id_links_valid": parent_id_links_valid,
+        "event_ids": list(event_ids),
+        "impact_parent_ids": list(impact_parent_ids),
+    }
+
+
 def enrich_unified_data(
     df: pd.DataFrame,
     enrichment_path: Optional[Path] = None,
 ) -> pd.DataFrame:
     """
     Append Task 1 enrichment: observations, events, and impact_links.
+
+    Construction follows unified schema: observations have pillar set; events have
+    category set and pillar empty; impact_links have parent_id (event record_id),
+    pillar (of the indicator affected), related_indicator, impact_*, lag_months, evidence_basis.
+    Run verify_enrichment_impact(df_before, df_after) to audit temporal coverage and expansion.
 
     Parameters
     ----------
