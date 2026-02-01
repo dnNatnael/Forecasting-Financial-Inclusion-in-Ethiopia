@@ -7,6 +7,7 @@ Combines:
 - Event-impact adjustments from impact_link (lagged effects)
 """
 
+import logging
 from typing import Optional
 
 import numpy as np
@@ -14,6 +15,45 @@ import pandas as pd
 
 from ..analysis.eda import get_access_series, get_usage_series
 from .event_impact import build_impact_matrix, apply_event_impacts
+
+logger = logging.getLogger(__name__)
+
+# Required columns for unified dataframe used in forecasting
+_REQUIRED_OBS_COLUMNS = ["record_type", "indicator_code", "observation_date", "value_numeric"]
+_REQUIRED_IMPACT_COLUMNS = ["record_type", "parent_id", "related_indicator"]
+_MIN_YEAR, _MAX_YEAR = 1900, 2100
+
+
+def _validate_forecast_inputs(
+    df: pd.DataFrame,
+    forecast_years: list[int],
+    apply_events: bool,
+) -> None:
+    """Validate inputs for forecast_access_usage; raise ValueError with informative message."""
+    if df is None or not isinstance(df, pd.DataFrame):
+        raise ValueError("df must be a non-null pandas DataFrame")
+    if df.empty:
+        raise ValueError("df is empty; cannot produce forecasts without data")
+    missing_obs = [c for c in _REQUIRED_OBS_COLUMNS if c not in df.columns]
+    if missing_obs:
+        raise ValueError(
+            f"df is missing required columns for observations: {missing_obs}. "
+            f"Expected at least: {_REQUIRED_OBS_COLUMNS}"
+        )
+    if apply_events:
+        missing_impact = [c for c in _REQUIRED_IMPACT_COLUMNS if c not in df.columns]
+        if missing_impact:
+            raise ValueError(
+                f"df is missing required columns for impact_link when apply_events=True: {missing_impact}. "
+                f"Expected: {_REQUIRED_IMPACT_COLUMNS}"
+            )
+    if not forecast_years:
+        raise ValueError("forecast_years must be a non-empty list of years")
+    invalid_years = [y for y in forecast_years if not isinstance(y, int) or y < _MIN_YEAR or y > _MAX_YEAR]
+    if invalid_years:
+        raise ValueError(
+            f"forecast_years must be integers between {_MIN_YEAR} and {_MAX_YEAR}; invalid: {invalid_years}"
+        )
 
 
 def _trend_forecast(
@@ -29,8 +69,19 @@ def _trend_forecast(
     method: 'linear' (regress value on year) or 'last' (flat at last value).
     """
     if series.empty:
+        logger.warning("Trend forecast received empty series; returning NaN for all forecast years")
         return pd.Series({y: np.nan for y in years_ahead})
     series = series.sort_index()
+    # Drop any rows with invalid (NaT) index dates
+    if hasattr(series.index, "year"):
+        valid_mask = pd.notna(series.index)
+        if not valid_mask.all():
+            n_invalid = (~valid_mask).sum()
+            logger.warning("Dropping %d observation(s) with missing/invalid dates from series", n_invalid)
+            series = series.loc[valid_mask]
+        if series.empty:
+            logger.warning("No valid dated observations left; returning NaN for all forecast years")
+            return pd.Series({y: np.nan for y in years_ahead})
     # index may be DatetimeIndex or PeriodIndex; get year
     if hasattr(series.index, "year"):
         year_index = series.index.year
@@ -96,15 +147,27 @@ def forecast_access_usage(
         Same structure.
     """
     forecast_years = forecast_years or [2025, 2026, 2027]
+    _validate_forecast_inputs(df, forecast_years, apply_events)
 
+    logger.info("Building access series (indicator=%s) and usage series (indicator=%s)", access_code, usage_code)
     access_hist = get_access_series(df, indicator_code=access_code)
     usage_hist = get_usage_series(df, indicator_code=usage_code)
 
-    # If usage series is empty, try fallback (e.g. active rate as proxy)
+    if access_hist.empty:
+        logger.warning("Access series is empty for indicator %s; baseline will be NaN", access_code)
     if usage_hist.empty and usage_code == "USG_DIGITAL_PAY":
+        logger.info("Usage series empty for USG_DIGITAL_PAY; trying fallback USG_ACTIVE_RATE")
         usage_hist = get_usage_series(df, indicator_code="USG_ACTIVE_RATE")
+    if usage_hist.empty:
+        logger.warning("Usage series is empty; baseline will be NaN")
 
-    impact_matrix = build_impact_matrix(df) if apply_events else None
+    impact_matrix = None
+    if apply_events:
+        impact_matrix = build_impact_matrix(df)
+        if impact_matrix.empty:
+            logger.info("Impact matrix is empty; forecasts will use baseline only")
+        else:
+            logger.info("Impact matrix has %d effect rows", len(impact_matrix))
 
     def forecast_one(hist: pd.Series, ind_code: str, name: str) -> pd.DataFrame:
         base = _trend_forecast(hist, forecast_years, method=trend_method)
@@ -120,4 +183,9 @@ def forecast_access_usage(
 
     access_forecast = forecast_one(access_hist, access_code, "Account Ownership (Access)")
     usage_forecast = forecast_one(usage_hist, usage_code, "Digital Payment Adoption (Usage)")
+    logger.info(
+        "Forecast complete: %d years for access and usage (apply_events=%s)",
+        len(forecast_years),
+        apply_events,
+    )
     return access_forecast, usage_forecast

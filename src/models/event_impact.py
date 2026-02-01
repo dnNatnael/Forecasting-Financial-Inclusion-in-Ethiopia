@@ -5,9 +5,18 @@ Uses lag_months and impact_estimate (or impact_magnitude) to build a matrix
 of (event_date + lag -> indicator -> effect) for use in forecasting.
 """
 
+import logging
 from typing import Optional
 
+import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+# Required columns when building from unified df
+_EVENTS_COLUMNS = ["record_id", "observation_date"]
+_IMPACT_LINK_COLUMNS = ["parent_id", "related_indicator"]
+_IMPACT_MATRIX_COLUMNS = ["event_id", "event_date", "related_indicator", "impact_estimate", "lag_months", "impact_direction"]
 
 
 def build_impact_matrix(
@@ -32,10 +41,40 @@ def build_impact_matrix(
     pd.DataFrame
         Columns: event_id, event_date, related_indicator, impact_estimate, lag_months, impact_direction.
     """
+    if df is None or not isinstance(df, pd.DataFrame):
+        raise ValueError("df must be a non-null pandas DataFrame")
+    if df.empty:
+        logger.warning("build_impact_matrix: df is empty; returning empty impact matrix")
+        return pd.DataFrame(columns=_IMPACT_MATRIX_COLUMNS)
+    if "record_type" not in df.columns:
+        raise ValueError("df must contain column 'record_type' to extract events and impact_link")
+
     if events is None:
-        events = df[df["record_type"] == "event"][["record_id", "observation_date"]].copy()
+        events = df[df["record_type"] == "event"].copy()
+        if events.empty:
+            logger.info("No event rows in df; impact matrix will have no event dates")
+            events = pd.DataFrame(columns=_EVENTS_COLUMNS)
+        else:
+            missing = [c for c in _EVENTS_COLUMNS if c not in events.columns]
+            if missing:
+                raise ValueError(
+                    f"Events subset is missing required columns: {missing}. "
+                    f"Expected: {_EVENTS_COLUMNS}"
+                )
+            events = events[["record_id", "observation_date"]].copy()
     if impact_links is None:
         impact_links = df[df["record_type"] == "impact_link"].copy()
+        if not impact_links.empty:
+            missing = [c for c in _IMPACT_LINK_COLUMNS if c not in impact_links.columns]
+            if missing:
+                raise ValueError(
+                    f"impact_link subset is missing required columns: {missing}. "
+                    f"Expected: {_IMPACT_LINK_COLUMNS}"
+                )
+        elif events.empty:
+            logger.info("No impact_link rows in df; returning empty impact matrix")
+            return pd.DataFrame(columns=_IMPACT_MATRIX_COLUMNS)
+
     events = events.rename(columns={"record_id": "event_id", "observation_date": "event_date"})
     impact_links = impact_links.rename(columns={"parent_id": "event_id"})
     merge = impact_links.merge(
@@ -43,11 +82,21 @@ def build_impact_matrix(
         on="event_id",
         how="left",
     )
-    cols = ["event_id", "event_date", "related_indicator", "impact_estimate", "lag_months", "impact_direction"]
-    for c in cols:
+    for c in _IMPACT_MATRIX_COLUMNS:
         if c not in merge.columns:
             merge[c] = pd.NA
-    return merge[cols].dropna(subset=["related_indicator"])
+
+    # Coerce event_date and drop rows with invalid dates
+    merge["event_date"] = pd.to_datetime(merge["event_date"], errors="coerce")
+    invalid_dates = merge["event_date"].isna()
+    if invalid_dates.any():
+        n_invalid = invalid_dates.sum()
+        logger.warning("Dropping %d impact_link row(s) with missing or invalid event_date", n_invalid)
+        merge = merge[~invalid_dates]
+
+    result = merge[_IMPACT_MATRIX_COLUMNS].dropna(subset=["related_indicator"])
+    logger.info("Built impact matrix with %d rows", len(result))
+    return result
 
 
 def apply_event_impacts(
@@ -82,10 +131,33 @@ def apply_event_impacts(
     float
         base_value + sum of effects for that year/indicator.
     """
+    if impact_matrix is None or not isinstance(impact_matrix, pd.DataFrame):
+        raise ValueError("impact_matrix must be a non-null pandas DataFrame")
+    required = ["related_indicator", "event_date", "lag_months", "impact_estimate", "impact_direction"]
+    missing = [c for c in required if c not in impact_matrix.columns]
+    if missing:
+        raise ValueError(
+            f"impact_matrix is missing required columns: {missing}. "
+            f"Expected at least: {required}"
+        )
+    if not isinstance(year, int):
+        raise ValueError(f"year must be an integer; got {type(year).__name__}")
+    if np.isnan(base_value) or np.isinf(base_value):
+        logger.warning("apply_event_impacts: base_value is %s; returning as-is", base_value)
+        return base_value
+
     imp = impact_matrix[impact_matrix["related_indicator"] == indicator_code].copy()
     if imp.empty:
+        logger.debug("No impact rows for indicator %s; returning base_value", indicator_code)
         return base_value
-    imp["event_date"] = pd.to_datetime(imp["event_date"])
+    imp["event_date"] = pd.to_datetime(imp["event_date"], errors="coerce")
+    invalid_dates = imp["event_date"].isna()
+    if invalid_dates.any():
+        n_drop = invalid_dates.sum()
+        logger.warning("Dropping %d row(s) with invalid event_date in apply_event_impacts", n_drop)
+        imp = imp[~invalid_dates]
+    if imp.empty:
+        return base_value
     imp["lag_months"] = pd.to_numeric(imp["lag_months"], errors="coerce").fillna(0).astype(int)
 
     def add_months(d: pd.Timestamp, months: int) -> pd.Timestamp:
@@ -98,6 +170,7 @@ def apply_event_impacts(
     imp["effect_year"] = imp["effect_date"].dt.year
     imp = imp[imp["effect_year"] == year]
     if imp.empty:
+        logger.debug("No effects for indicator %s in year %s; returning base_value", indicator_code, year)
         return base_value
     delta = 0.0
     for _, row in imp.iterrows():
