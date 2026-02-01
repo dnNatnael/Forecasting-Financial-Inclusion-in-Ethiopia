@@ -30,6 +30,10 @@ UNIFIED_COLS = [
 OPTIONAL_COLS = ["parent_id"]
 
 
+COLLECTION_DATE = "2025-02-01"
+COLLECTED_BY = "Selam Analytics (Task 1)"
+
+
 def _row(
     record_id: str,
     pillar: str,
@@ -44,9 +48,12 @@ def _row(
     source_type: str = "",
     source_url: str = "",
     confidence: str = "medium",
+    original_text: Optional[str] = None,
+    collected_by: str = COLLECTED_BY,
+    collection_date: str = COLLECTION_DATE,
     notes: str = "",
 ) -> dict:
-    """Build one observation row with unified schema."""
+    """Build one observation row with unified schema and documentation fields."""
     return {
         "record_id": record_id,
         "record_type": "observation",
@@ -78,9 +85,9 @@ def _row(
         "lag_months": None,
         "evidence_basis": None,
         "comparable_country": None,
-        "collected_by": "enrichment",
-        "collection_date": pd.Timestamp("today").strftime("%Y-%m-%d"),
-        "original_text": None,
+        "collected_by": collected_by,
+        "collection_date": collection_date,
+        "original_text": original_text,
         "notes": notes,
     }
 
@@ -103,6 +110,7 @@ def _enrichment_observations() -> pd.DataFrame:
             source_type="survey",
             source_url="https://www.worldbank.org/en/publication/globalfindex",
             confidence="high",
+            original_text="Ethiopia account ownership 14% (2011). World Bank Global Findex Database.",
             notes="Baseline year (Findex); added for continuity.",
         )
     )
@@ -124,6 +132,7 @@ def _enrichment_observations() -> pd.DataFrame:
                 source_type="survey" if year == 2024 else "estimated",
                 source_url="https://www.worldbank.org/en/publication/globalfindex" if year == 2024 else "",
                 confidence="high" if year == 2024 else "estimated",
+                original_text="Made or received digital payment in past 12 months (%)." if year == 2024 else None,
                 notes="Findex: made or received digital payment (past 12 months)." if year == 2024 else "Approximate pre–digital surge.",
             )
         )
@@ -213,6 +222,139 @@ def _enrichment_observations() -> pd.DataFrame:
         )
     )
 
+    # --- 5. Used account to receive wages (Usage) — Findex 2024 ---
+    rows.append(
+        _row(
+            "REC_ENR_008",
+            "USAGE",
+            "Used Account to Receive Wages",
+            "USG_WAGES",
+            15.0,
+            "%",
+            "2024-12-31",
+            source_name="Global Findex 2024",
+            source_type="survey",
+            source_url="https://www.worldbank.org/en/publication/globalfindex",
+            confidence="high",
+            original_text="Share of adults who used an account to receive wages in the past 12 months; Ethiopia ~15% (2024).",
+            notes="Direct usage indicator; useful for forecasting digital payment adoption.",
+        )
+    )
+
+    return pd.DataFrame(rows)
+
+
+def _enrichment_events() -> pd.DataFrame:
+    """New events (category filled; pillar left empty per schema)."""
+    base = {
+        "record_type": "event",
+        "category": None,
+        "pillar": None,
+        "indicator_direction": None,
+        "value_numeric": None,
+        "value_text": None,
+        "value_type": None,
+        "unit": None,
+        "period_start": pd.NaT,
+        "period_end": pd.NaT,
+        "fiscal_year": None,
+        "gender": "all",
+        "location": "national",
+        "region": None,
+        "related_indicator": None,
+        "relationship_type": None,
+        "impact_direction": None,
+        "impact_magnitude": None,
+        "impact_estimate": None,
+        "lag_months": None,
+        "evidence_basis": None,
+        "comparable_country": None,
+        "collected_by": COLLECTED_BY,
+        "collection_date": COLLECTION_DATE,
+        "parent_id": None,
+    }
+    rows = [
+        {
+            **base,
+            "record_id": "EVT_ENR_001",
+            "indicator": "NBE Interoperability Directive",
+            "indicator_code": "EVT_INTEROP_DIR",
+            "observation_date": pd.to_datetime("2024-06-01"),
+            "source_name": "NBE",
+            "source_type": "regulator",
+            "source_url": "https://nbe.gov.et",
+            "confidence": "high",
+            "original_text": "National Bank of Ethiopia directive on interoperability of mobile money and payment systems.",
+            "notes": "Enables cross-platform P2P and merchant payments; supports Usage forecasting.",
+            "value_text": "Implemented",
+            "category": "regulation",
+        },
+    ]
+    return pd.DataFrame(rows)
+
+
+def _enrichment_impact_links() -> pd.DataFrame:
+    """New impact_links (parent_id -> event, pillar, related_indicator, impact_*, lag_months, evidence_basis)."""
+    base = {
+        "record_type": "impact_link",
+        "category": None,
+        "indicator_direction": None,
+        "value_numeric": None,
+        "value_text": None,
+        "value_type": None,
+        "unit": None,
+        "period_start": pd.NaT,
+        "period_end": pd.NaT,
+        "fiscal_year": None,
+        "gender": "all",
+        "location": "national",
+        "region": None,
+        "source_name": None,
+        "source_type": None,
+        "source_url": None,
+        "confidence": None,
+        "comparable_country": None,
+        "collected_by": COLLECTED_BY,
+        "collection_date": COLLECTION_DATE,
+        "original_text": None,
+        "notes": None,
+    }
+    rows = [
+        {
+            **base,
+            "record_id": "IMP_ENR_001",
+            "parent_id": "EVT_ENR_001",
+            "pillar": "USAGE",
+            "indicator": "NBE Interop effect on Digital Payment Adoption",
+            "indicator_code": None,
+            "related_indicator": "USG_DIGITAL_PAY",
+            "relationship_type": "direct",
+            "impact_direction": "increase",
+            "impact_magnitude": "medium",
+            "impact_estimate": 5.0,
+            "lag_months": 12,
+            "evidence_basis": "literature",
+            "observation_date": pd.to_datetime("2024-06-01"),
+            "notes": "Interoperability typically raises digital payment usage (Tanzania, India).",
+        },
+        {
+            **base,
+            "record_id": "IMP_ENR_002",
+            "parent_id": "EVT_0004",
+            "pillar": "USAGE",
+            "indicator": "Fayda effect on Digital Payment Adoption",
+            "indicator_code": None,
+            "related_indicator": "USG_DIGITAL_PAY",
+            "relationship_type": "enabling",
+            "impact_direction": "increase",
+            "impact_magnitude": "low",
+            "impact_estimate": 3.0,
+            "lag_months": 24,
+            "evidence_basis": "literature",
+            "observation_date": pd.to_datetime("2024-01-01"),
+            "notes": "Digital ID enables account opening and payments; indirect effect on usage.",
+        },
+    ]
     return pd.DataFrame(rows)
 
 
@@ -221,7 +363,7 @@ def enrich_unified_data(
     enrichment_path: Optional[Path] = None,
 ) -> pd.DataFrame:
     """
-    Append Task 1 enrichment observations to the unified dataset.
+    Append Task 1 enrichment: observations, events, and impact_links.
 
     Parameters
     ----------
@@ -233,16 +375,23 @@ def enrich_unified_data(
     Returns
     -------
     pd.DataFrame
-        df with additional observation rows (same columns). New record_ids
-        are REC_ENR_* to avoid clashes.
+        df with additional observation (REC_ENR_*), event (EVT_ENR_*), and
+        impact_link (IMP_ENR_*) rows. Same columns; parent_id present for impact_link.
     """
-    extra = _enrichment_observations()
-    # Align columns: df may have parent_id from impact_link
-    for c in extra.columns:
-        if c not in df.columns:
-            df[c] = pd.NA
-    for c in df.columns:
-        if c not in extra.columns:
-            extra[c] = pd.NA
-    extra = extra[[c for c in df.columns if c in extra.columns]]
-    return pd.concat([df, extra], ignore_index=True)
+    extra_obs = _enrichment_observations()
+    extra_events = _enrichment_events()
+    extra_impact = _enrichment_impact_links()
+
+    def align_and_concat(extra: pd.DataFrame) -> pd.DataFrame:
+        for c in extra.columns:
+            if c not in df.columns:
+                df[c] = pd.NA
+        for c in df.columns:
+            if c not in extra.columns:
+                extra[c] = pd.NA
+        return extra[[c for c in df.columns if c in extra.columns]]
+
+    extra_obs = align_and_concat(extra_obs.copy())
+    extra_events = align_and_concat(extra_events.copy())
+    extra_impact = align_and_concat(extra_impact.copy())
+    return pd.concat([df, extra_obs, extra_events, extra_impact], ignore_index=True)
