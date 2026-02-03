@@ -65,11 +65,15 @@ events = get_events_timeline(df)
 ### Event–impact and forecast
 
 ```python
-from src.models import build_impact_matrix, build_event_indicator_association_matrix, forecast_access_usage
+from src.models import build_impact_matrix, build_event_indicator_association_matrix, forecast_access_usage, forecast_access_usage_with_uncertainty
 
 impact_matrix = build_impact_matrix(df)
 assoc_matrix = build_event_indicator_association_matrix(impact_matrix)  # events × indicators (effect in pp)
 access_forecast, usage_forecast = forecast_access_usage(df)
+
+# With confidence intervals and scenarios (Task 4)
+access_f, usage_f = forecast_access_usage_with_uncertainty(df, forecast_years=[2025, 2026, 2027])
+# Returns DataFrames with value_baseline, value_adjusted, ci_lower, ci_upper, scenario_optimistic, scenario_pessimistic
 ```
 
 ### Dashboard
@@ -96,12 +100,13 @@ Output: `Interim_Report.docx` in the project root; figures are saved under `repo
 
 ```
 ├── data/raw/                    # ethiopia_fi_unified_data.xlsx, reference_codes.xlsx, guide
+├── data/processed/              # enriched CSV/Excel; forecast tables (Task 4)
 ├── src/
 │   ├── data/                    # load.py, enrichment.py
 │   ├── analysis/                # eda.py (access/usage series, events)
-│   └── models/                  # event_impact.py, forecast.py
+│   └── models/                  # event_impact.py, forecast.py (with uncertainty & scenarios)
 ├── dashboard/app.py             # Dash app
-├── notebooks/                   # EDA, task-2, and event impact modeling (03)
+├── notebooks/                   # 01 EDA, 02 task-2, 03 event impact, 04 forecasting (Task 4)
 ├── models/                      # (optional) saved models
 └── tests/
 ```
@@ -112,6 +117,7 @@ Output: `Interim_Report.docx` in the project root; figures are saved under `repo
 - **Event impact**: `impact_link` records give `related_indicator`, `impact_estimate` (e.g. +15 pp), `lag_months`. Effects are applied in the year `event_date + lag_months` and summed for each indicator.
 - **Forecast**: Baseline trend value + cumulative event effects for 2025, 2026, 2027.
 - **Event–indicator matrix**: See `notebooks/03_event_impact_modeling.ipynb` and `docs/EVENT_IMPACT_METHODOLOGY.md` for the association matrix (events × indicators), validation (e.g. Telebirr vs ACC_MM_ACCOUNT), and full methodology, assumptions, and limitations.
+- **Forecasting (Task 4)**: `notebooks/04_forecasting_access_usage.ipynb` produces forecasts for 2025–2027 with baseline trend, event-adjusted values, 95% confidence intervals, and optimistic/base/pessimistic scenarios; see `docs/TASK4_FORECASTING.md`. Merge `task-3` into `main` via PR before or with task-4.
 
 ## License and disclaimer
 

@@ -107,6 +107,23 @@ def test_forecast_single_year_baseline():
     assert access_f["value_adjusted"].notna().all()
 
 
+def test_forecast_with_uncertainty_returns_ci_and_scenarios():
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from src.models import forecast_access_usage_with_uncertainty
+    df = _minimal_unified_df()
+    access_f, usage_f = forecast_access_usage_with_uncertainty(
+        df, forecast_years=[2025, 2026], apply_events=False
+    )
+    for frame in (access_f, usage_f):
+        assert "year" in frame.columns and "value_baseline" in frame.columns
+        assert "value_adjusted" in frame.columns
+        assert "ci_lower" in frame.columns and "ci_upper" in frame.columns
+        assert "scenario_optimistic" in frame.columns and "scenario_pessimistic" in frame.columns
+        assert "scenario_base" in frame.columns
+    assert len(access_f) == 2 and len(usage_f) == 2
+
+
 def test_forecast_apply_events_false_skips_impact_columns_check():
     import sys
     sys.path.insert(0, str(ROOT))
