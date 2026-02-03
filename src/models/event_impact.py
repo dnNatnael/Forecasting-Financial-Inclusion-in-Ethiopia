@@ -181,3 +181,65 @@ def apply_event_impacts(
             est = -est
         delta += est
     return base_value + delta if unit_is_percentage else base_value * (1 + delta / 100.0)
+
+
+def build_event_indicator_association_matrix(
+    impact_matrix: pd.DataFrame,
+    event_labels: Optional[pd.DataFrame] = None,
+    indicator_codes: Optional[list[str]] = None,
+    aggregate: str = "sum",
+) -> pd.DataFrame:
+    """
+    Build the event–indicator association matrix: rows = events, columns = indicators,
+    values = estimated effect (percentage points, signed).
+
+    Parameters
+    ----------
+    impact_matrix : pd.DataFrame
+        Output of build_impact_matrix (event_id, related_indicator, impact_estimate, impact_direction).
+    event_labels : pd.DataFrame, optional
+        If provided, must have columns event_id and at least one label column (e.g. indicator
+        or indicator_code) to use as row index. Otherwise event_id is used.
+    indicator_codes : list[str], optional
+        If provided, columns are exactly these (missing cells become NaN). Otherwise
+        columns are the unique related_indicator values in impact_matrix.
+    aggregate : str
+        How to combine multiple (event, indicator) links: "sum" or "max". Default "sum".
+
+    Returns
+    -------
+    pd.DataFrame
+        Rows: event_id (or event label); columns: indicator codes; values: effect in percentage points.
+    """
+    if impact_matrix is None or impact_matrix.empty:
+        out = pd.DataFrame()
+        if indicator_codes is not None:
+            out = pd.DataFrame(columns=indicator_codes)
+        return out
+    required = ["event_id", "related_indicator", "impact_estimate", "impact_direction"]
+    missing = [c for c in required if c not in impact_matrix.columns]
+    if missing:
+        raise ValueError(
+            f"impact_matrix is missing required columns: {missing}. Expected: {required}"
+        )
+    mat = impact_matrix.copy()
+    mat["impact_estimate"] = pd.to_numeric(mat["impact_estimate"], errors="coerce").fillna(0)
+    direction = mat["impact_direction"].astype(str).str.lower()
+    mat["effect_pp"] = np.where(direction.eq("decrease"), -mat["impact_estimate"], mat["impact_estimate"])
+    if aggregate == "max":
+        grouped = mat.groupby(["event_id", "related_indicator"], as_index=False)["effect_pp"].max()
+    else:
+        grouped = mat.groupby(["event_id", "related_indicator"], as_index=False)["effect_pp"].sum()
+    pivot = grouped.pivot(index="event_id", columns="related_indicator", values="effect_pp")
+    if event_labels is not None and not event_labels.empty and "event_id" in event_labels.columns:
+        label_col = "indicator" if "indicator" in event_labels.columns else "indicator_code"
+        if label_col in event_labels.columns:
+            labels = event_labels.drop_duplicates("event_id").set_index("event_id")[label_col]
+            pivot = pivot.reindex(labels.index)
+            pivot.index = labels.values
+    if indicator_codes is not None:
+        for c in indicator_codes:
+            if c not in pivot.columns:
+                pivot[c] = np.nan
+        pivot = pivot[[c for c in indicator_codes if c in pivot.columns]]
+    return pivot
