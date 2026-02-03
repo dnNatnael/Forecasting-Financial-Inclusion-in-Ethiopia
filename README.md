@@ -38,7 +38,7 @@ source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 pip install -r requirements.txt
 ```
 
-Dependencies include `pandas`, `openpyxl`, `numpy`, `scikit-learn`, `statsmodels`, `dash`, `plotly`.
+Dependencies include `pandas`, `openpyxl`, `numpy`, `scikit-learn`, `statsmodels`, `dash`, `plotly`, and `python-docx` for report generation.
 
 ## Usage
 
@@ -79,6 +79,17 @@ python -m dashboard.app
 ```
 
 Then open http://127.0.0.1:8050 for the interactive dashboard (Access/Usage charts, forecast table, events timeline).
+
+### Interim Report (.docx)
+
+To generate the Interim Report in Word format (data enrichment summary, EDA insights with visualizations, event–indicator observations, limitations, next steps):
+
+```bash
+pip install python-docx   # if not already installed
+python scripts/generate_interim_report.py
+```
+
+Output: `Interim_Report.docx` in the project root; figures are saved under `report_figures/`.
 
 ## Project structure
 
