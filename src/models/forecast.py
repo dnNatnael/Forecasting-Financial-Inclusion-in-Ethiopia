@@ -5,6 +5,8 @@ Combines:
 - Historical time series (Findex + enriched)
 - Simple trend (linear or growth rate)
 - Event-impact adjustments from impact_link (lagged effects)
+- Confidence intervals (trend uncertainty; sparse-data limitations)
+- Scenarios: optimistic, base, pessimistic (event-effect multipliers)
 """
 
 import logging
@@ -54,6 +56,95 @@ def _validate_forecast_inputs(
         raise ValueError(
             f"forecast_years must be integers between {_MIN_YEAR} and {_MAX_YEAR}; invalid: {invalid_years}"
         )
+
+
+def _get_event_delta(
+    year: int,
+    impact_matrix: pd.DataFrame,
+    indicator_code: str,
+) -> float:
+    """Sum of event effects (in percentage points) for the given year and indicator."""
+    if impact_matrix is None or impact_matrix.empty:
+        return 0.0
+    return apply_event_impacts(0.0, year, impact_matrix, indicator_code, unit_is_percentage=True)
+
+
+def _trend_forecast_with_ci(
+    series: pd.Series,
+    years_ahead: list[int],
+    method: str = "linear",
+    confidence: float = 0.95,
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """
+    Trend forecast with point estimate and confidence intervals.
+
+    Uses OLS on (year, value). Intervals widen for extrapolation (prediction interval).
+    With sparse data (e.g. 5 points), intervals are wide; limitations should be acknowledged.
+
+    Returns
+    -------
+    point : pd.Series, index = year, value = point forecast
+    lower : pd.Series, lower bound of confidence interval
+    upper : pd.Series, upper bound
+    """
+    try:
+        import statsmodels.api as sm
+    except ImportError:
+        logger.warning("statsmodels not available; returning point forecast only, no CI")
+        point = _trend_forecast(series, years_ahead, method=method)
+        nan_ser = pd.Series({y: np.nan for y in years_ahead})
+        return point, nan_ser.copy(), nan_ser.copy()
+
+    if series.empty:
+        nan_ser = pd.Series({y: np.nan for y in years_ahead})
+        return nan_ser.copy(), nan_ser.copy(), nan_ser.copy()
+
+    series = series.sort_index()
+    if hasattr(series.index, "year"):
+        valid_mask = pd.notna(series.index)
+        if not valid_mask.all():
+            series = series.loc[valid_mask]
+    if series.empty:
+        nan_ser = pd.Series({y: np.nan for y in years_ahead})
+        return nan_ser.copy(), nan_ser.copy(), nan_ser.copy()
+
+    year_index = series.index.year if hasattr(series.index, "year") else np.arange(len(series))
+    vals = series.values
+    by_year = pd.Series(vals, index=year_index).groupby(level=0).mean()
+    years_hist = by_year.index.astype(int).tolist()
+    vals_hist = by_year.values
+    n = len(years_hist)
+    if n < 2:
+        point = _trend_forecast(series, years_ahead, method=method)
+        nan_ser = pd.Series({y: np.nan for y in years_ahead})
+        return point, nan_ser.copy(), nan_ser.copy()
+
+    x = np.array(years_hist, dtype=float).reshape(-1, 1)
+    x = sm.add_constant(x)
+    y = vals_hist
+    model = sm.OLS(y, x).fit()
+    # Prediction interval for new years
+    point_out = {}
+    lower_out = {}
+    upper_out = {}
+    for y in years_ahead:
+        if y <= max(years_hist) and y in years_hist:
+            idx = years_hist.index(y)
+            point_out[y] = float(vals_hist[idx])
+            lower_out[y] = point_out[y]
+            upper_out[y] = point_out[y]
+            continue
+        x_new = sm.add_constant(np.array([[y]]))
+        pred = model.get_prediction(x_new)
+        pred_summary = pred.summary_frame(alpha=1 - confidence)
+        point_out[y] = float(pred_summary["mean"].iloc[0])
+        lower_out[y] = float(pred_summary["obs_ci_lower"].iloc[0])
+        upper_out[y] = float(pred_summary["obs_ci_upper"].iloc[0])
+    return (
+        pd.Series(point_out),
+        pd.Series(lower_out),
+        pd.Series(upper_out),
+    )
 
 
 def _trend_forecast(
@@ -187,5 +278,102 @@ def forecast_access_usage(
         "Forecast complete: %d years for access and usage (apply_events=%s)",
         len(forecast_years),
         apply_events,
+    )
+    return access_forecast, usage_forecast
+
+
+def forecast_access_usage_with_uncertainty(
+    df: pd.DataFrame,
+    access_code: str = "ACC_OWNERSHIP",
+    usage_code: str = "USG_DIGITAL_PAY",
+    forecast_years: Optional[list[int]] = None,
+    apply_events: bool = True,
+    trend_method: str = "linear",
+    confidence: float = 0.95,
+    scenario_optimistic_mult: float = 1.2,
+    scenario_pessimistic_mult: float = 0.6,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Forecast Access and Usage with confidence intervals and scenario ranges.
+
+    - Baseline: trend continuation (linear regression on historical years).
+    - With events: baseline + event effects (impact_link, lagged).
+    - CI: prediction interval from trend regression (wider with sparse data).
+    - Scenarios: same trend; event effects scaled (optimistic 1.2x, pessimistic 0.6x).
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Unified + enriched dataframe.
+    access_code, usage_code : str
+        Indicator codes for Access and Usage.
+    forecast_years : list[int], optional
+        Default [2025, 2026, 2027].
+    apply_events : bool
+        If True, add event impacts to baseline.
+    trend_method : str
+        'linear' or 'last'.
+    confidence : float
+        Confidence level for intervals (e.g. 0.95).
+    scenario_optimistic_mult : float
+        Multiplier on event delta for optimistic scenario (default 1.2).
+    scenario_pessimistic_mult : float
+        Multiplier on event delta for pessimistic scenario (default 0.6).
+
+    Returns
+    -------
+    access_forecast : pd.DataFrame
+        Columns: year, value_baseline, value_adjusted, ci_lower, ci_upper,
+        scenario_optimistic, scenario_base, scenario_pessimistic, indicator.
+    usage_forecast : pd.DataFrame
+        Same structure.
+    """
+    forecast_years = forecast_years or [2025, 2026, 2027]
+    _validate_forecast_inputs(df, forecast_years, apply_events)
+
+    access_hist = get_access_series(df, indicator_code=access_code)
+    usage_hist = get_usage_series(df, indicator_code=usage_code)
+    if usage_hist.empty and usage_code == "USG_DIGITAL_PAY":
+        usage_hist = get_usage_series(df, indicator_code="USG_ACTIVE_RATE")
+
+    impact_matrix = build_impact_matrix(df) if apply_events else None
+
+    def forecast_one_uncertain(
+        hist: pd.Series,
+        ind_code: str,
+        name: str,
+    ) -> pd.DataFrame:
+        point, lower, upper = _trend_forecast_with_ci(
+            hist, forecast_years, method=trend_method, confidence=confidence
+        )
+        rows = []
+        for y in forecast_years:
+            b = float(point.get(y, np.nan))
+            delta = _get_event_delta(y, impact_matrix, ind_code) if apply_events and impact_matrix is not None else 0.0
+            adj = b + delta if not np.isnan(b) else np.nan
+            ci_lo = float(lower.get(y, np.nan))
+            ci_hi = float(upper.get(y, np.nan))
+            # Scenario: baseline + scaled event delta (CI bounds stay trend-only for clarity)
+            opt = b + scenario_optimistic_mult * delta if not np.isnan(b) else np.nan
+            pess = b + scenario_pessimistic_mult * delta if not np.isnan(b) else np.nan
+            rows.append({
+                "year": y,
+                "value_baseline": b,
+                "value_adjusted": adj,
+                "ci_lower": ci_lo,
+                "ci_upper": ci_hi,
+                "scenario_optimistic": opt,
+                "scenario_base": adj,
+                "scenario_pessimistic": pess,
+                "indicator": name,
+            })
+        return pd.DataFrame(rows)
+
+    access_forecast = forecast_one_uncertain(access_hist, access_code, "Account Ownership (Access)")
+    usage_forecast = forecast_one_uncertain(usage_hist, usage_code, "Digital Payment Adoption (Usage)")
+    logger.info(
+        "Forecast with uncertainty: %d years, confidence=%.2f, scenarios applied",
+        len(forecast_years),
+        confidence,
     )
     return access_forecast, usage_forecast
