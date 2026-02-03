@@ -65,9 +65,10 @@ events = get_events_timeline(df)
 ### Event–impact and forecast
 
 ```python
-from src.models import build_impact_matrix, forecast_access_usage
+from src.models import build_impact_matrix, build_event_indicator_association_matrix, forecast_access_usage
 
 impact_matrix = build_impact_matrix(df)
+assoc_matrix = build_event_indicator_association_matrix(impact_matrix)  # events × indicators (effect in pp)
 access_forecast, usage_forecast = forecast_access_usage(df)
 ```
 
@@ -100,7 +101,7 @@ Output: `Interim_Report.docx` in the project root; figures are saved under `repo
 │   ├── analysis/                # eda.py (access/usage series, events)
 │   └── models/                  # event_impact.py, forecast.py
 ├── dashboard/app.py             # Dash app
-├── notebooks/                   # EDA and analysis notebooks
+├── notebooks/                   # EDA, task-2, and event impact modeling (03)
 ├── models/                      # (optional) saved models
 └── tests/
 ```
@@ -110,6 +111,7 @@ Output: `Interim_Report.docx` in the project root; figures are saved under `repo
 - **Baseline trend**: Linear regression of historical Access/Usage on year.
 - **Event impact**: `impact_link` records give `related_indicator`, `impact_estimate` (e.g. +15 pp), `lag_months`. Effects are applied in the year `event_date + lag_months` and summed for each indicator.
 - **Forecast**: Baseline trend value + cumulative event effects for 2025, 2026, 2027.
+- **Event–indicator matrix**: See `notebooks/03_event_impact_modeling.ipynb` and `docs/EVENT_IMPACT_METHODOLOGY.md` for the association matrix (events × indicators), validation (e.g. Telebirr vs ACC_MM_ACCOUNT), and full methodology, assumptions, and limitations.
 
 ## License and disclaimer
 

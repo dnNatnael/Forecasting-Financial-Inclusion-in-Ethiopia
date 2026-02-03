@@ -284,3 +284,50 @@ def test_apply_event_impacts_nan_base_returns_as_is():
     ])
     out = apply_event_impacts(float("nan"), 2025, matrix, "ACC_OWNERSHIP")
     assert np.isnan(out)
+
+
+# ----- Event-indicator association matrix -----
+
+
+def test_build_event_indicator_association_matrix_empty_returns_empty():
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from src.models.event_impact import build_event_indicator_association_matrix
+    result = build_event_indicator_association_matrix(pd.DataFrame())
+    assert isinstance(result, pd.DataFrame)
+    assert result.empty
+
+
+def test_build_event_indicator_association_matrix_pivot_and_direction():
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from src.models.event_impact import build_event_indicator_association_matrix
+    matrix = pd.DataFrame({
+        "event_id": ["e1", "e1", "e2"],
+        "related_indicator": ["ACC_OWNERSHIP", "USG_DIGITAL_PAY", "ACC_OWNERSHIP"],
+        "impact_estimate": [10.0, 5.0, 2.0],
+        "impact_direction": ["increase", "increase", "decrease"],
+    })
+    result = build_event_indicator_association_matrix(matrix)
+    assert "e1" in result.index and "e2" in result.index
+    assert result.loc["e1", "ACC_OWNERSHIP"] == 10.0
+    assert result.loc["e1", "USG_DIGITAL_PAY"] == 5.0
+    assert result.loc["e2", "ACC_OWNERSHIP"] == -2.0  # decrease: -impact_estimate
+
+
+def test_build_event_indicator_association_matrix_with_indicator_codes():
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from src.models.event_impact import build_event_indicator_association_matrix
+    matrix = pd.DataFrame({
+        "event_id": ["e1"],
+        "related_indicator": ["ACC_OWNERSHIP"],
+        "impact_estimate": [5.0],
+        "impact_direction": ["increase"],
+    })
+    result = build_event_indicator_association_matrix(
+        matrix, indicator_codes=["ACC_OWNERSHIP", "USG_DIGITAL_PAY"]
+    )
+    assert list(result.columns) == ["ACC_OWNERSHIP", "USG_DIGITAL_PAY"]
+    assert result.loc["e1", "ACC_OWNERSHIP"] == 5.0
+    assert pd.isna(result.loc["e1", "USG_DIGITAL_PAY"])
